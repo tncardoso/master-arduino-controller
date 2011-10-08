@@ -1,13 +1,44 @@
 #!/usr/bin/env python
 
+# The following license does not apply to controller.png
+#
+# Copyright (c) 2011, Thiago C. (tncardoso.com)
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are
+# met:
+#    * Redistributions of source code must retain the above copyright
+#      notice, this list of conditions and the following disclaimer.
+#    * Redistributions in binary form must reproduce the above copyright
+#      notice, this list of conditions and the following disclaimer in the
+#      documentation and/or other materials provided with the distribution.
+#    * Neither the name of Thiago C. nor the
+#      names of its contributors may be used to endorse or promote products
+#      derived from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+# PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL Thiago C. BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
+# THE POSSIBILITY OF SUCH DAMAGE. 
+
 from __future__ import division
 import sys
 import threading
 import pygame
 import serial
+import ctypes
 from datetime import datetime, timedelta
 
 class Dummy:
+    '''Dummy for testing without using serial communication'''
     def write(self, txt):
         pass
 
@@ -87,7 +118,6 @@ class Gui:
         if replay is None: self._replay = None
         else: self._replay = open(replay, 'r')
         
-        # last action time
         self._atime = datetime.now()
 
         # set window size and get screen
@@ -129,11 +159,18 @@ class Gui:
         self._actions[pygame.KEYDOWN][pygame.K_RIGHT] = self.pushButtonRight
         self._actions[pygame.KEYUP][pygame.K_RIGHT] =   self.releaseButtonRight
 
+        # force arduino release
+        for key, func in self._actions[pygame.KEYUP].iteritems():
+            func()
+
     def __del__(self):
         self._record.close()
 
     def run(self):
         self._dthread.start()
+
+        # last action time
+        self._atime = datetime.now()
 
         # check if it is a playback
         if self._replay is not None:
@@ -156,22 +193,21 @@ class Gui:
         actions = []
         for action in self._replay.readlines():
             spt = action.split()
-            td = timedelta(seconds=float(spt[0]))
-            if spt[1] == 'P': action = pygame.KEYDOWN
+            if spt[2] == 'P': action = pygame.KEYDOWN
             else: action = pygame.KEYUP
 
-            if spt[2] == 'A': button = pygame.K_z
-            elif spt[2] == 'B': button = pygame.K_x
-            elif spt[2] == 'U': button = pygame.K_UP
-            elif spt[2] == 'D': button = pygame.K_DOWN
-            elif spt[2] == 'L': button = pygame.K_LEFT
+            if spt[3] == 'A': button = pygame.K_z
+            elif spt[3] == 'B': button = pygame.K_x
+            elif spt[3] == 'U': button = pygame.K_UP
+            elif spt[3] == 'D': button = pygame.K_DOWN
+            elif spt[3] == 'L': button = pygame.K_LEFT
             else: button = pygame.K_RIGHT
 
-            # get sleep time in mili seconds
-            stime = self.total_seconds(td) * (10 ** 3)
-            print 'appending action= %s button= %s sleep= %s'%(action,
-                    button, stime)
-            actions.append((int(stime), action, button))
+            sec = int(spt[0])
+            nsec = int(spt[1])
+            print 'appending action= %s button= %s sec= %s nsec=%s'%(action,
+                    button, sec, nsec)
+            actions.append((sec, nsec, action, button))
 
             # check events
             for event in pygame.event.get():
@@ -180,13 +216,13 @@ class Gui:
                     return
 
         # execute replay loop
-        for stime, state, button in actions:
+        for sec, nsec, state, button in actions:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self._finished = True
                     return
            
-            pygame.time.delay(stime)
+            nanosleep(sec, nsec)
             self.checkKeyEvent(state, button)
 
     def checkKeyEvent(self, state, key):
@@ -208,7 +244,8 @@ class Gui:
             now = datetime.now()
             td = now - self._atime
             self._atime = now
-            self._record.write('%s %s %s\n'%(self.total_seconds(td), state, button))
+            self._record.write('%d %s %s %s\n'%(td.seconds,
+                td.microseconds * (10**3), state, button))
             
     def pushButtonA(self):
         self._serial.pushButtonA()
@@ -259,6 +296,23 @@ class Gui:
         self._button_right = False
         self.recordAction('R','R')
 
+# nanosleep function for better time resolution
+libc = ctypes.CDLL('libc.so.6')
+class timespec(ctypes.Structure):
+    # parameters t_time sec and long nsec
+    _fields_ = [('sec', ctypes.c_long), ('nsec', ctypes.c_long)]   
+libc.nanosleep.argtypes = [ctypes.POINTER(timespec), ctypes.POINTER(timespec)]
+  
+def nanosleep(sec, nsec):
+    req = timespec()
+    req.sec = sec
+    req.nsec = nsec
+    rem = timespec()
+    # nanosleep returns -1 in case of interruption and write rem with
+    # the remaining time
+    while libc.nanosleep(req, rem) == -1:
+        req = rem
+        rem = timespec()
 
 if __name__ == '__main__':
     if len(sys.argv) < 3:
