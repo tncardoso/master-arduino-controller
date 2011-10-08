@@ -31,7 +31,7 @@ void setup()
 void loop()
 {
   // since the voltage drops to zero when a button is pressed,
-  // in order to send "A button" command, it's wire output should be 
+  // in order to send "A button" command, its wire output should be 
   // set to low.
   if (Serial.available() > 0)
   {
